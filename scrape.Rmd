@@ -17,15 +17,15 @@ library(dplyr)
 
 ```{r notes}
 # only includes undergraduate classes (although undergraduates can take graduate level classes)
-# single credit lectures and seminars seminars and lectures
-# ignores abroad
+# seminars and lectures
+# ignores abroad classes
 ```
 
 
 ```{r}
 #make a get request to a given url and parse response body as JSON
-make.get <- function(url){
-  Sys.sleep(0.1)  # ensure at least 1/10th second between requests
+make.get <- function(url, sleep = 3){
+  Sys.sleep(sleep)  # sleep between requests
   GET(url, accept_json()) %>% 
     content('parsed') %>% 
     return()
@@ -74,53 +74,49 @@ depts.pratt <- c('EGR', 'ME', 'BME', 'ECE', 'CEE', 'ENRGYEGR')
 courses <- lapply(terms, function(term){
   res <- make.get(url.courses(term))
   
-  mat.courses <- res$courses[!sapply(res$courses, function(x) grepl('A', x$catalog_nbr, fixed=T))] %>%  # remove abroad classes
-    sapply(res$courses, function(x) c('courseid' = x$crse_id, 'term' = term)) %>% t()  # extract course id
-  return(as.data.frame(mat.courses, stringsAsFactors = F))
-}) %>% bind_rows() %>% unique()
+  courses.notabroad <- res$courses[!sapply(res$courses, function(x) grepl('A', x$catalog_nbr, fixed=T))]  # remove abroad classes
+  sapply(courses.notabroad, function(x) c('term' = term, 'courseid' = x$crse_id)) %>% t() %>% 
+    as.data.frame(stringsAsFactors = F) %>% 
+    group_by(courseid) %>% mutate(num.depts = n()) %>% unique() %>% ungroup() %>% 
+    return()
+}) %>% bind_rows()
 ```
 
 
 ```{r}
 #get sections from courses
-apply(courses, 1, function(vec){
-  term <- vec['term']; courseid <- vec['courseid']
-  res <- make.get(url.sections(term, courseid))
-  
-  lapply(res$sections, function(section){
-    
-  }) %>% return()
-})
-
-get.prop <- function(list, prop) sapply(list, function(elem) elem[prop]) %>% unlist()
-
-
-data <- apply(courses[courses$term == '1700',], 1, function(vec){  # TODO: apply to all courses
+data.raw <- apply(courses %>% sample_n(10), 1, function(vec){  # TODO: apply to all courses
   print(vec)
-  term <- vec['term']; courseid <- vec['courseid']
-  res <- make.get(url.sections(term, courseid))
+  res <- make.get(url.sections(vec['term'], vec['courseid']))
   
   components <- get.prop(res$sections, 'component')
-  lectures <- res$sections[components %in% c('LEC', 'SEM')] # filter out non-seminar sections
+  lecture <- NULL
+  for(section in res$sections){  # find lecture in primary department
+    if(section$component %in% c('LEC', 'SEM')) lecture <- section
+  }
+  if(is.null(lecture)) return(data.frame())
   
-  n <- length(lectures)
+  meeting.1 <- if(length(lecture$meetings) >= 1) lecture$meetings[[1]] else NULL
+  
   data.frame(
-    term = rep(term, n),
-    courseid = rep(courseid, n),
-    sectionid = get.prop(lectures, 'class_nbr'),
-    has.disc = rep(any(components == 'DIS'), n),
-    has.lab = rep(any(components == 'LAB'), n),
-    enrolled = get.prop(lectures, 'enrollment_total'),
-    capacity = get.prop(lectures, 'class_capacity'),
-    component = get.prop(lectures, 'component'),
-    dept = get.prop(lectures, 'subject'),
-    number = get.prop(lectures, 'catalog_nbr'),
-    title = get.prop(lectures, 'descr'),
-    time.start = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$meeting_time_start)) NA else sem$meetings[[1]]$meeting_time_start),
-    time.end = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$meeting_time_end)) NA else sem$meetings[[1]]$meeting_time_end),
-    building = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$bldg_cd)) NA else sem$meetings[[1]]$bldg_cd),
-    meetings = sapply(lectures, function(sem) sapply(sem$meetings, function(meeting) meeting$stnd_mtg_pat) %>% paste(collapse='')),
-    stringsAsFactors = F
+    term = vec['term'],
+    courseid = vec['courseid'],
+    num.depts = vec['num.depts'],
+    sectionid = lecture$class_nbr,
+    has.disc = any(components == 'DIS'),
+    has.lab = any(components == 'LAB'),
+    enrolled = lecture$enrollment_total,
+    capacity = lecture$class_capacity,
+    component = lecture$component,
+    dept = lecture$subject,
+    number = lecture$catalog_nbr,
+    title = lecture$descr,
+    units = lecture$units,
+    time.start = if(is.null(meeting.1) || is.null(meeting.1$meeting_time_start)) NA else meeting.1$meeting_time_start,
+    time.end = if(is.null(meeting.1) || is.null(meeting.1$meeting_time_end)) NA else meeting.1$meeting_time_end,
+    building = if(is.null(meeting.1) || is.null(meeting.1$bldg_cd)) NA else meeting.1$bldg_cd,
+    meetings = if(is.null(meeting.1)) NA else sapply(lecture$meetings, function(meeting) meeting$stnd_mtg_pat) %>% paste(collapse=''),
+  stringsAsFactors = F
   ) %>% return()
 }) %>% bind_rows()
 
@@ -133,10 +129,10 @@ data <- data  %>%
     number = gsub('[A-Z]+', '', number),
     level = case_when(
       nchar(number) == 2 ~ '<100',
-      starts_with(number, '1') ~ '100',
-      starts_with(number, '2') ~ '200',
-      starts_with(number, '3') ~ '300',
-      starts_with(number, '4') ~ '400',
+      startsWith(number, '1') ~ '100',
+      startsWith(number, '2') ~ '200',
+      startsWith(number, '3') ~ '300',
+      startsWith(number, '4') ~ '400',
       T ~ '>=500'
     ),
     campus = case_when(
@@ -151,6 +147,5 @@ data <- data  %>%
 # component - LAB (lab), LEC (lecture), IND (independent study), DIS (discussion), SEM (seminar), TUT (tutored? MUSIC 281T), MUS (music), REC (recitation)
 # units - 0, 0.5, 1, etc
 # suffixes - S (seminar), T (tutored?), A (abroad?), D (has discussion), L (has lab), F (foucus)
-
 ```
 
