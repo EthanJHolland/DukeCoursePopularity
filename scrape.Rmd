@@ -1,0 +1,156 @@
+---
+title: "Scraping"
+author: "Ethan Holland"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, message=F, include=F}
+library(glue)
+library(httr)
+library(dplyr)
+```
+
+```{r notes}
+# only includes undergraduate classes (although undergraduates can take graduate level classes)
+# single credit lectures and seminars seminars and lectures
+# ignores abroad
+```
+
+
+```{r}
+#make a get request to a given url and parse response body as JSON
+make.get <- function(url){
+  Sys.sleep(0.1)  # ensure at least 1/10th second between requests
+  GET(url, accept_json()) %>% 
+    content('parsed') %>% 
+    return()
+}
+
+url.courses <- function(term, dept=''){
+  return(glue(
+    'https://beta.dukehub.duke.edu/psc/CSPRD01/EMPLOYEE/SA/s/WEBLIB_HCX_CM.H_BROWSE_CLASSES.FieldFormula.IScript_BrowseCourses?institution=DUKEU&term={term}&institution=DUKEU&acad_career=UGRD&subject={dept}'
+  ))
+}
+
+url.sections <- function(term, courseid){
+  return(glue(
+    'https://beta.dukehub.duke.edu/psc/CSPRD01/EMPLOYEE/SA/s/WEBLIB_HCX_CM.H_BROWSE_CLASSES.FieldFormula.IScript_BrowseSections?institution=DUKEU&campus=&location=&course_id={courseid}&institution=DUKEU&acad_career=UGRD&term={term}'
+  ))
+}
+
+url.description <- function(term, section.id){
+  return(glue(
+    'https://beta.dukehub.duke.edu/psc/CSPRD01/EMPLOYEE/SA/s/WEBLIB_HCX_CM.H_CLASS_SEARCH.FieldFormula.IScript_ClassDetails?institution=DUKEU&term=1700&class_nbr={section.id}'
+  ))
+}
+```
+
+```{r}
+terms <- c(  # based on https://registrar.duke.edu/faculty-staff-resources/dukehub
+  '2014 Fall' = 1500,
+  '2015 Spring' = 1510,
+  '2015 Fall' = 1540,
+  '2016 Spring' = 1550,
+  '2016 Fall' = 1580,
+  '2017 Spring' = 1590,
+  '2017 Fall' = 1620,
+  '2018 Spring' = 1630,
+  '2018 Fall' = 1660,
+  '2019 Spring' = 1670,
+  '2019 Fall' = 1700,
+  '2020 Spring' = 1710
+)
+
+depts.pratt <- c('EGR', 'ME', 'BME', 'ECE', 'CEE', 'ENRGYEGR')
+```
+
+```{r}
+#get courses from terms
+courses <- lapply(terms, function(term){
+  res <- make.get(url.courses(term))
+  
+  mat.courses <- res$courses[!sapply(res$courses, function(x) grepl('A', x$catalog_nbr, fixed=T))] %>%  # remove abroad classes
+    sapply(res$courses, function(x) c('courseid' = x$crse_id, 'term' = term)) %>% t()  # extract course id
+  return(as.data.frame(mat.courses, stringsAsFactors = F))
+}) %>% bind_rows() %>% unique()
+```
+
+
+```{r}
+#get sections from courses
+apply(courses, 1, function(vec){
+  term <- vec['term']; courseid <- vec['courseid']
+  res <- make.get(url.sections(term, courseid))
+  
+  lapply(res$sections, function(section){
+    
+  }) %>% return()
+})
+
+get.prop <- function(list, prop) sapply(list, function(elem) elem[prop]) %>% unlist()
+
+
+data <- apply(courses[courses$term == '1700',], 1, function(vec){  # TODO: apply to all courses
+  print(vec)
+  term <- vec['term']; courseid <- vec['courseid']
+  res <- make.get(url.sections(term, courseid))
+  
+  components <- get.prop(res$sections, 'component')
+  lectures <- res$sections[components %in% c('LEC', 'SEM')] # filter out non-seminar sections
+  
+  n <- length(lectures)
+  data.frame(
+    term = rep(term, n),
+    courseid = rep(courseid, n),
+    sectionid = get.prop(lectures, 'class_nbr'),
+    has.disc = rep(any(components == 'DIS'), n),
+    has.lab = rep(any(components == 'LAB'), n),
+    enrolled = get.prop(lectures, 'enrollment_total'),
+    capacity = get.prop(lectures, 'class_capacity'),
+    component = get.prop(lectures, 'component'),
+    dept = get.prop(lectures, 'subject'),
+    number = get.prop(lectures, 'catalog_nbr'),
+    title = get.prop(lectures, 'descr'),
+    time.start = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$meeting_time_start)) NA else sem$meetings[[1]]$meeting_time_start),
+    time.end = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$meeting_time_end)) NA else sem$meetings[[1]]$meeting_time_end),
+    building = sapply(lectures, function(sem) if(length(sem$meetings) < 1 || is.null(sem$meetings[[1]]$bldg_cd)) NA else sem$meetings[[1]]$bldg_cd),
+    meetings = sapply(lectures, function(sem) sapply(sem$meetings, function(meeting) meeting$stnd_mtg_pat) %>% paste(collapse='')),
+    stringsAsFactors = F
+  ) %>% return()
+}) %>% bind_rows()
+
+
+data <- data  %>% 
+  mutate(
+    is.focus = grepl('F', number, fixed=T),
+    is.sem = grepl('S', number, fixed=T),
+    is.pratt = dept %in% depts.pratt,
+    number = gsub('[A-Z]+', '', number),
+    level = case_when(
+      nchar(number) == 2 ~ '<100',
+      starts_with(number, '1') ~ '100',
+      starts_with(number, '2') ~ '200',
+      starts_with(number, '3') ~ '300',
+      starts_with(number, '4') ~ '400',
+      T ~ '>=500'
+    ),
+    campus = case_when(
+      startsWith(building, '77') ~ 'west',
+      startsWith(building, '70') ~ 'central',
+      startsWith(building, '71') ~ 'central',
+      startsWith(building, '72') ~ 'east',
+      T ~ 'other'
+    )
+  )
+
+# component - LAB (lab), LEC (lecture), IND (independent study), DIS (discussion), SEM (seminar), TUT (tutored? MUSIC 281T), MUS (music), REC (recitation)
+# units - 0, 0.5, 1, etc
+# suffixes - S (seminar), T (tutored?), A (abroad?), D (has discussion), L (has lab), F (foucus)
+
+```
+
