@@ -47,7 +47,7 @@ terms <- c(  # based on https://registrar.duke.edu/faculty-staff-resources/dukeh
   '2018 Fall' = 1660,
   '2019 Spring' = 1670,
   '2019 Fall' = 1700#,
-  # '2020 Spring' = 1710
+  # '2020 Spring' = 1710  # next semester
 )
 
 #get courses from terms
@@ -55,7 +55,7 @@ scrape.courses <- function(terms){
   courses <- lapply(terms, function(term){
     res <- make.get(url.courses(term))
     
-    courses.notabroad <- res$courses[!sapply(res$courses, function(x) grepl('A', x$catalog_nbr, fixed=T) || x$subject == "REG")]  # ignore abroad classes
+    courses.notabroad <- res$courses[!sapply(res$courses, function(x) grepl('[AF]', x$catalog_nbr) || x$subject %in% c('HOUSECS', 'REG'))]  # ignore abroad classes, focus courses, and house courses
     sapply(courses.notabroad, function(x) c('term' = term, 'courseid' = x$crse_id)) %>% t() %>% 
       as.data.frame(stringsAsFactors = F) %>% 
       group_by(courseid) %>% mutate(num.depts = n()) %>% unique() %>% ungroup() %>% 

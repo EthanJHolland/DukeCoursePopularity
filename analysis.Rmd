@@ -1,0 +1,182 @@
+---
+title: "Understanding Duke Course Popularity"
+author: "Ethan Holland"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, fig.height = 2)
+set.seed(440)
+```
+
+```{r libs, message=F, include=F}
+library(lme4)
+library(pROC)
+library(dplyr)
+library(knitr)
+library(cowplot)
+library(ggplot2)
+source('scrape.R')
+source('clean.R')
+```
+
+##### Abstract
+
+Understanding college course registration behavior not only gives insight into the student decision making process but is also useful for universities planning courses and professors trying to encourage students to take their courses. This project aims to model undergraduate course fullness at Duke University to factors associated with course popularity and to be able to predict whether out-of-sample classes will fill-up. Data is collected from DukeHub and partial-pooling is used to account for small categories.
+
+##### Data
+
+```{r}
+data.raw <- load.data()
+data <- clean.data(data.raw)
+```
+
+Data was collected from DukeHub, Duke's website for all things from course registration to transcript requests. Although the current form of DukeHub requires login to access information and renders data via iframes, the beta version of DukeHub 2.0 ([beta.dukehub.duke.edu](https://beta.dukehub.duke.edu)) does not require authentication to view courses and uses an API to communicate between the frontend (webpage) and backend (server), simplifying data collection. Thus, data was collected via requests to two endpoints of the DukeHub 2.0 API, the first of which gives a list of courses for a given term and the second of which gives information on the sections of a given course.
+
+Since this analysis is interested in the choices that Duke students make, only those classes which any Duke student can chose to take are used For example, this excludes courses taken abroad, courses at the Duke Marine Lab, and classes only open to Focus program students. Although undergraduates can take graduate courses, only undergraduate courses are included to keep the focus on the target population. Additionally, courses created so that individual students can get credit for 1-on-1 work with a professor are excluded from the analysis. For example, _Introduction to Jazz_ is considered but _Jazz Guitar_, the course representing individual private lessons in jazz guitar with a music professor, is not. Finally, to preserve independence, each course is counted exactly once using its primary department, but a record is kept of the number of crosslistings.
+
+The resulting dataset includes `r nrow(data.raw)` courses over `r length(terms)` semesters (`r names(terms)[[1]]` to `r names(terms)[[length(terms)]]`). Data for the upcoming Spring 2020 term is available but is not used since registration numbers may be inflated before the end of the drop/add period. Information on meeting location/time is missing for some courses, but since this represents only `r round((nrow(data.raw) - nrow(data))/nrow(data.raw) * 100, 1)`% of records, these courses are simply removed.
+
+##### EDA
+
+We begin with an exploratory data analysis.
+
+```{r}
+a <- ggplot(data, aes(x = full.prop)) + 
+  geom_histogram(binwidth = 0.1) + 
+  ggtitle('Distribution of class fullness') + 
+  xlab('Proportion of course capacity filled') + 
+  ylab('Number of courses') + 
+  theme_bw()
+
+x <- seq(0, 1, 0.001)
+y <- sapply(x, function(z) mean(data$full.prop >= z))
+b <- ggplot(NULL, aes(x = x, y = y)) + 
+  geom_point(size = 0.4) + 
+  xlim(0, 1) + ylim(0, 1) + 
+  ggtitle('Courses by fullness threshold') + 
+  xlab('Proportion of seats filled threshold') + 
+  ylab('Proportion of courses') + 
+  theme_bw()
+plot_grid(a, b)
+```
+
+The plot on the left shows a histogram of class fullness and the plot on the right shows the proportion of courses which meet a given fullness threshold for each threshold. Although `r round(mean(data$full.prop >= 0.5)*100, 1)`% of courses are at least half full, only `r round(mean(data$full.prop >= 1)*100, 1)`% of courses are completely full. In general, the trend between fullness threshold and number of courses which meet the threshold appears to be non-linear.
+
+```{r}
+bins <- 10
+
+a <- ggplot(NULL, aes(x = table(data$dept))) + 
+  geom_histogram(bins = bins) + 
+  ggtitle('Histogram of courses \nby department') + 
+  xlab('# of courses offered') + 
+  ylab('# of departments') + 
+  theme_bw()
+
+b <- ggplot(NULL, aes(x = table(data$building))) + 
+  geom_histogram(bins = bins) + 
+  ggtitle('Histogram of courses \nheld by building') + 
+  xlab('# of courses held') + 
+  ylab('# of buildings') + 
+  theme_bw()
+
+c <- ggplot(NULL, aes(x = table(data$meetings))) + 
+  geom_histogram(bins = bins) + 
+  ggtitle('Histogram of courses \nby meeting pattern') + 
+  xlab('# of courses w/ pattern') + 
+  ylab('# of patterns') + 
+  theme_bw()
+
+plot_grid(a, b, c, nrow = 1)
+```
+As can be seen in the histograms above, the distributions for department, building, and meeting pattern are all heavily skewed right and include many small categories. For example, `r sum(table(data$dept) < 15)` out of `r length(unique(data$dept))` departments offered fewer than 15 courses (as the primary department) over the span of the `r length(terms)` semesters under consideration. The prevalence of these small categories suggests that use of partial-pooling may be necessary.
+
+##### Model
+
+Although the data includes information on the proportion of seats which are full for each course, we model whether or not a course fills its capacity (or exceeds its capacity). Based on the EDA, partial-pooling is used for department, building, and meeting pattern with all other variables being fixed effects.
+
+Since prediction is one the goals of this analysis, model selection was performed based on out-of-sample predictive power. Models were trained on the first `r length(terms) - 1` semesters of data, and tested on the `r length(terms)`th. Model performance was compared based on the area under the receiver operating characteristic curve (AUC), a metric which quantifies the distinguishing ability of a model as its prediction threshold is varied. Out-of-sample AUC results for a selection of models tried are shown in the table below.
+
+```{r model, cache=T}
+thresh <- 1
+data$response <- data$full.prop >= thresh
+
+data.test <- data %>% filter(term == max(data$term))
+data.train <- data %>% filter(term < max(data$term))
+
+model.hier.full <- glmer(response ~ term + crosslistings + has.disc + has.lab + scale(capacity) + level + units + scale(time.start) + scale(time.lecture) + is.sem + (1|building) + campus + (1|meetings) + meetings.num + (1|dept) + is.pratt, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train)
+
+model.hier.nobuildings <- glmer(response ~ term + crosslistings + has.disc + has.lab + scale(capacity) + level + units + scale(time.start) + scale(time.lecture) + is.sem + campus + (1|meetings) + meetings.num + (1|dept) + is.pratt, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train)
+
+model.hier.nodepts <- glmer(response ~ term + crosslistings + has.disc + has.lab + scale(capacity) + level + units + scale(time.start) + scale(time.lecture) + is.sem + (1|building) + campus + (1|meetings) + meetings.num + is.pratt, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train)
+
+model.hier.nomeetings <- glmer(response ~ term + crosslistings + has.disc + has.lab + scale(capacity) + level + units + scale(time.start) + scale(time.lecture) + is.sem + (1|building) + campus + meetings.num + (1|dept) + is.pratt, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train)
+
+model.hier.nomeetings.inttermdept <- glmer(response ~ term + crosslistings + has.disc + has.lab + scale(capacity) + level + units + scale(time.start) + scale(time.lecture) + is.sem + (1|building) + campus + meetings.num + (1+term|dept) + is.pratt, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train)
+
+formula.final <- response ~ term + (1+term|dept) + level + is.sem + units + crosslistings + scale(capacity) + has.disc + has.lab + poly(time.start, 2) + meetings.num + scale(time.lecture) + (1|building) + campus
+model.final <- glmer(formula.final, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data.train) # model.hier.nomeetings.inttermdept.nopratt.starttime2
+```
+
+```{r}
+models <- c(
+  'All variables'=model.hier.full, 
+  'Without buildings'=model.hier.nobuildings,
+  'Without depts.'=model.hier.nodepts,
+  'Without meetings'=model.hier.nomeetings,
+  'Without meetings, with dept. specific semester coefficient'=model.hier.nomeetings.inttermdept,
+  'Without meetings & Pratt, with dept. specific semester coefficient & quadratic start time'=model.final
+)
+
+res <- sapply(models, function(model){
+  preds <- predict(model, data.test, type = 'response', allow.new.levels=T)
+  roc(data.test$response, preds, quiet = T) %>% auc() %>% return()
+})
+
+data.frame(AUC = res, row.names = names(models)) %>% kable(digits=4)
+```
+
+Based on the model selection process, the final model (shown in the last row of the table) is:
+
+
+$$\textrm{logit}\left[\Pr(\textrm{full}_i=1)\right] = \beta_0 + \vec\beta\cdot\vec x_i + \alpha^{dept}_{j[i]} + \beta^{term}_{j[i]}\textrm{term}_i + \alpha^{building}_{k[i]}$$
+$$\alpha^{dept}_j \sim \mathcal{N}(\mu^{dept},\ \sigma_{dept}^2)$$
+$$\alpha^{building}_j \sim \mathcal{N}(\mu^{building},\ \sigma_{building}^2)$$
+
+where $j[i]$ is the index of the primary department for course $i$, $k[i]$ is the index of the building in which course $i$ takes place, and $\vec x_i$ holds term, level, seminar status, number of credits, crosslistings, capacity, whether or not the course has a discussion and/or a lab, start time, number of weekly meetings, total lecture time, and campus for course $i$.
+
+```{r finalmodel, cache=T}
+model <- glmer(formula.final, family = binomial(), control = glmerControl(optimizer = 'bobyqa', optCtrl=list(maxfun=2e4)), data = data) # retrain final model on full dataset
+```
+
+```{r}
+save(model, file='model.rda')
+# load('model.rda')
+```
+
+##### Results & Discussion
+
+The fixed effects coefficients for the final model, after retraining on the entire dataset, are as follows:
+
+```{r}
+vars <- c(
+  '(Intercept)', 'Term', 'Level: < 100', 'Level: 200-299', 'Level: 300-399', 'Level: 400-499',
+  'Seminar', 'Credits: 0', 'Credits: 0.5', 'Credits: 2', 'Crosslistings', 'Capacity (normalized)', 'Has discussion',
+  'Has lab', 'Start time (min) (quadratic)', 'Start time (min) (linear)', 'Number of meetings',
+  'Total lecture time (normalized)', 'Campus: central', 'Campus: east', 'Campus: other'
+)
+
+coefs <- summary(model.final)$coefficients %>% 
+  as.data.frame() %>% 
+  mutate(Variable = vars, Estimate = exp(Estimate), `Std. Error`=exp(`Std. Error`), `p-value`=`Pr(>|z|)`) %>% 
+  select(Variable, Estimate, `Std. Error`, `z value`, `p-value`)
+kable(coefs, digits=4)
+```
+
+The baseline values are a 100-level, single credit course held on west campus.
+
+The results are generally unsurprising. The strongest predictors are level (a proxy for difficulty), capacity, and number of crosslistings. Expected probability of fullness decreases as course level goes up. All else held constant, each additional crosslisting is expected to multiply the odds ratio by a factor of `r round(coefs[coefs$Variable == 'Crosslistings',]$Estimate[1], 4)`. Having a lab or a discussion decreases expected probability of fullness whereas seminars are expected to be full more often than non-seminars. Courses which meet fewer times per week and for less total time are expected to fill at higher rates, although it is interesting that the meeting days themselves does not add any additional information (as seen in the model selection). A course being held on West campus is expected to fill with higher probability than a comparable course held elsewhere.
+
+##### Visualization
+
+In order to make this analysis more accessible to the general public, a published visualization can be found at [ethanjholland.shinyapps.io/dukecoursepopularity/](https://ethanjholland.shinyapps.io/dukecoursepopularity/). The visualization uses the above model to compare the expected probability of fullness for two classes, side-by-side. As values are changed, boxes on the right appear which are green when the current settings of a variable favor the modified course (right course) and red if the variable favors the original course (left course). This tool can help departments and professors make educated descisions to maximize popularity when determining the details of a course.
