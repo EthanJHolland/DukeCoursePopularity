@@ -17,9 +17,9 @@ buildings <- read.csv('buildings.csv', header = T)
 
 # constants
 vars <- data.frame(
-  var = c('term', 'dept', 'level', 'building', 'units', 'crosslistings', 'capacity', 'timestart', 'timeend', 'meetingsnum'),
+  var = c('term', 'dept', 'level', 'building', 'units', 'crosslistings', 'capacity', 'timestart', 'timeend', 'meetingsnum', 'issem', 'hasdisc', 'haslab'),
   margin = c(30, 30, 30, 25, 40
-             , 35, 40, 35, 35, 0)
+             , 35, 40, 35, 35, 40, 10, 10, 0)
 )
 
 # helper variables and functions
@@ -46,19 +46,16 @@ get.pred <- function(get.val, index){
     last.valid.endtimes[index] <<- get.val('timeend')
   }
   
-  print(last.valid.starttimes)
-  print(last.valid.endtimes)
-  
   df <- data.frame(
     term = if(get.val('term') == 'Spring 2020') length(terms) + 1 else which(names(terms) == get.val('term')),
     dept = get.val('dept'),
     level = get.val('level'),
-    is.sem = T, #TODO: fix
+    is.sem = get.val('issem'),
     units = get.val('units'),
     crosslistings = get.val('crosslistings'),
     capacity = get.val('capacity'),
-    has.disc = F, #TODO: fix
-    has.lab = F, #TODO: fix
+    has.disc = get.val('hasdisc'),
+    has.lab = get.val('haslab'),
     time.start = times.to.mins(last.valid.starttimes[index]),
     time.end = times.to.mins(last.valid.endtimes[index]),
     meetings.num = get.val('meetingsnum'),
@@ -137,12 +134,22 @@ add.form <- function(title, label){
                    value = 2,
                    min = 1,
                    max = 5
-      )
+      ),
       
-      # checkboxGroupInput(paste0('misc', label), 
-      #                    label = 'Miscellaneous', 
-      #                    choices = list('has a discussion?', 'has a lab?', 'is a seminar?')
-      # )
+      checkboxInput(paste0('issem', label),
+                    label = 'Seminar?',
+                    value = F
+      ),
+      
+      checkboxInput(paste0('hasdisc', label),
+                    label = 'Has discussion?',
+                    value = F
+      ),
+      
+      checkboxInput(paste0('haslab', label),
+                    label = 'Has lab?',
+                    value = F
+      )
   ) %>% return()
 }
 
