@@ -10,40 +10,62 @@ source('clean.R')
 # library(rsconnect)
 # deployApp('.')
 
+# data
 load('model.rda')
 data <- load.data() %>% clean.data()
 buildings <- read.csv('buildings.csv', header = T)
 
 # constants
 vars <- data.frame(
-  var = c('term', 'dept', 'level', 'building', 'units', 'crosslistings', 'capacity', 'timestart', 'meetingsnum'), #'timeend',
+  var = c('term', 'dept', 'level', 'building', 'units', 'crosslistings', 'capacity', 'timestart', 'timeend', 'meetingsnum'),
   margin = c(30, 30, 30, 25, 40
-             , 35, 40, 35, 0)
+             , 35, 40, 35, 35, 0)
 )
 
-# helper functions
+# helper variables and functions
+last.valid.starttimes <- rep('10:05', 2)
+last.valid.endtimes <- rep('11:20', 2)
+
+is.valid.time <- function(time){
+  return(
+    grepl('^[0-2]?\\d:[0-5]\\d$', time) && 
+    abs(times.to.mins(time) - 12*60) < 12*60 # verify 0 < time < mins in a day
+  )
+}
+
 choices <- function(vec){
   vec %>% as.character() %>% table() %>% sort(decreasing = T) %>% names() %>% return()
 }
 
-get.pred <- function(get.val){
+get.pred <- function(get.val, index){
   # response ~ term + (1+term|dept) + level + is.sem + units + crosslistings + scale(capacity) + has.disc + has.lab + poly(time.start, 2) + meetings.num + scale(time.lecture) + (1|building) + campus
-  building <- buildings[buildings$name == get.val('building'),]$id
+  if(is.valid.time(get.val('timestart'))){
+    last.valid.starttimes[index] <<- get.val('timestart')
+  }
+  if(is.valid.time(get.val('timeend'))){
+    last.valid.endtimes[index] <<- get.val('timeend')
+  }
+  
+  print(last.valid.starttimes)
+  print(last.valid.endtimes)
   
   df <- data.frame(
-    term = which(names(terms) == get.val('term')),
+    term = if(get.val('term') == 'Spring 2020') length(terms) + 1 else which(names(terms) == get.val('term')),
     dept = get.val('dept'),
     level = get.val('level'),
-    is.sem = T,
+    is.sem = T, #TODO: fix
     units = get.val('units'),
     crosslistings = get.val('crosslistings'),
     capacity = get.val('capacity'),
-    has.disc = F,
-    has.lab = F,
-    time.start = times.to.mins(get.val('timestart')),
+    has.disc = F, #TODO: fix
+    has.lab = F, #TODO: fix
+    time.start = times.to.mins(last.valid.starttimes[index]),
+    time.end = times.to.mins(last.valid.endtimes[index]),
     meetings.num = get.val('meetingsnum'),
-    time.lecture = get.val('meetingsnum') * (75), #TODO: fix
-    building = building,
+    building = buildings[buildings$name == get.val('building'),]$id
+
+  ) %>% mutate(
+    time.lecture = get.val('meetingsnum') * abs(time.end - time.start),
     campus = case_when(
       startsWith(building %>% as.character(), '77') ~ 'west',
       startsWith(building %>% as.character(), '70') ~ 'central',
@@ -105,10 +127,10 @@ add.form <- function(title, label){
                 value = '10:05'
       ),
       
-      # textInput(paste0('timeend', label),
-      #           label='End time',
-      #           value = '11:20'
-      # ),
+      textInput(paste0('timeend', label),
+                label='End time',
+                value = '11:20'
+      ),
       
       numericInput(paste0('meetingsnum', label),
                    label = 'Lectures per week',
@@ -149,12 +171,12 @@ ui <- navbarPage(
 server <- function(input, output) {
   output$probA <- renderText({
     get.val <- function(name) input[[paste0(name, 'A')]]
-    paste('Course A probability: ', round(get.pred(get.val), 4))
+    paste('Course A probability: ', round(get.pred(get.val, 1), 4))
   })
   
   output$probB <- renderText({
     get.val <- function(name) input[[paste0(name, 'B')]]
-    paste('Course B probability: ', round(get.pred(get.val), 4))
+    paste('Course B probability: ', round(get.pred(get.val, 2), 4))
   })
   
   apply(vars, 1, function(vec){
@@ -163,8 +185,8 @@ server <- function(input, output) {
       get.val.A <- function(name) input[[paste0(name, 'A')]]
       get.val.B <- function(name) if(name == var) input[[paste0(name, 'B')]] else input[[paste0(name, 'A')]]
       
-      predA <- get.pred(get.val.A)
-      predB <- get.pred(get.val.B)
+      predA <- get.pred(get.val.A, 1)
+      predB <- get.pred(get.val.B, 2)
       
       if(predA < predB){
         return('favors B')
@@ -181,8 +203,8 @@ server <- function(input, output) {
       get.val.A <- function(name) input[[paste0(name, 'A')]]
       get.val.B <- function(name) if(name == var) input[[paste0(name, 'B')]] else input[[paste0(name, 'A')]]
       
-      predA <- get.pred(get.val.A)
-      predB <- get.pred(get.val.B)
+      predA <- get.pred(get.val.A, 1)
+      predB <- get.pred(get.val.B, 2)
 
       color <- '#ffffff'
       if(predA < predB){
@@ -200,8 +222,8 @@ server <- function(input, output) {
       get.val.A <- function(name) input[[paste0(name, 'A')]]
       get.val.B <- function(name) if(name == var) input[[paste0(name, 'B')]] else input[[paste0(name, 'A')]]
 
-      predA <- get.pred(get.val.A)
-      predB <- get.pred(get.val.B)
+      predA <- get.pred(get.val.A, 1)
+      predB <- get.pred(get.val.B, 2)
 
       color <- '#ffffff'
       if(predA < predB){
@@ -212,13 +234,8 @@ server <- function(input, output) {
       runjs(paste0('$("#', var, 'Col").css("background-color", "', color, '")'))
     })
   })
-
-  # observeEvent(input$termA, {
-  #   color <- if(input$termA == input$termB) '#eccdcd' else '#cddccd'
-  #   runjs(paste0('$("#', var, 'Col").css("background-color", "', color, '")'))
-  # })
 }
 
-# Run the application 
+# launch application 
 shinyApp(ui = ui, server = server)
 
