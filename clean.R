@@ -35,6 +35,10 @@ times.to.mins <- function(times){
   sapply(split, function(x) as.numeric(x[1])*60 + as.numeric(x[2])) %>% return()
 }
 
+mins.to.time <- function(mins){
+  paste0(mins %/% 60, ':', if(mins %% 60 < 10) '0' else '', mins %% 60) %>% return()
+}
+
 remove.missing <- function(data) data[complete.cases(data),]
 
 #external functions
@@ -73,6 +77,6 @@ clean.data <- function(data.raw){
     ) %>% 
     select(
       full.prop, term, crosslistings, has.disc, has.lab, capacity, dept, level, units, time.start,
-      time.lecture, building, campus, meetings, meetings.num, is.sem, is.pratt
+      time.lecture, building, campus, meetings, meetings.num, is.sem, is.pratt, number
     ) %>% remove.missing() %>% return()
 }
