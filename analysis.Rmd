@@ -22,7 +22,7 @@ source('clean.R')
 
 ##### Abstract
 
-Understanding college course registration behavior not only gives insight into the student decision making process but is also useful for universities planning courses and professors trying to encourage students to take their courses. This project aims to model undergraduate course fullness at Duke University to factors associated with course popularity and to be able to predict whether out-of-sample classes will fill-up. Data is collected from DukeHub and partial-pooling is used to account for small categories.
+Understanding college course registration behavior not only gives insight into the student decision making process but is also useful for universities planning courses and professors trying to encourage students to take their courses. This project models undergraduate course fullness at Duke University to identify factors associated with course popularity and to be able to predict whether out-of-sample classes will fill-up. Data is collected from DukeHub and partial-pooling is used to account for small categories and new categories.
 
 ##### Data
 
@@ -35,7 +35,7 @@ Data was collected from DukeHub, Duke's website for all things from course regis
 
 Since this analysis is interested in the choices that Duke students make, only those classes which any Duke student can chose to take are used For example, this excludes courses taken abroad, courses at the Duke Marine Lab, and classes only open to Focus program students. Although undergraduates can take graduate courses, only undergraduate courses are included to keep the focus on the target population. Additionally, courses created so that individual students can get credit for 1-on-1 work with a professor are excluded from the analysis. For example, _Introduction to Jazz_ is considered but _Jazz Guitar_, the course representing individual private lessons in jazz guitar with a music professor, is not. Finally, to preserve independence, each course is counted exactly once using its primary department, but a record is kept of the number of crosslistings.
 
-The resulting dataset includes `r nrow(data.raw)` courses over `r length(terms)` semesters (`r names(terms)[[1]]` to `r names(terms)[[length(terms)]]`). Data for the upcoming Spring 2020 term is available but is not used since registration numbers may be inflated before the end of the drop/add period. Information on meeting location/time is missing for some courses, but since this represents only `r round((nrow(data.raw) - nrow(data))/nrow(data.raw) * 100, 1)`% of records, these courses are simply removed.
+The resulting dataset includes `r nrow(data.raw)` courses over `r length(terms)` semesters (`r names(terms)[[1]]` to `r names(terms)[[length(terms)]]`). Data for the upcoming Spring 2020 term is available but is not used since registration numbers may be inflated before the end of the drop/add period. Information on meeting location/time is missing for some courses but, since this represents only `r round((nrow(data.raw) - nrow(data))/nrow(data.raw) * 100, 1)`% of records, these courses are simply removed.
 
 ##### EDA
 
@@ -89,7 +89,7 @@ c <- ggplot(NULL, aes(x = table(data$meetings))) +
 
 plot_grid(a, b, c, nrow = 1)
 ```
-As can be seen in the histograms above, the distributions for department, building, and meeting pattern are all heavily skewed right and include many small categories. For example, `r sum(table(data$dept) < 15)` out of `r length(unique(data$dept))` departments offered fewer than 15 courses (as the primary department) over the span of the `r length(terms)` semesters under consideration. The prevalence of these small categories suggests that use of partial-pooling may be necessary.
+As can be seen in the histograms above, the distributions for department, building, and meeting pattern are all heavily skewed right and include many small categories. For example, `r sum(table(data$dept) < 15)` out of `r length(unique(data$dept))` departments offered fewer than 15 courses (as the primary department) over the span of the `r length(terms)` semesters under consideration. The prevalence of these small categories suggests that use of partial-pooling may be necessary. **Additionally, some categories, such as in the Rubenstein Arts Center building and Urdu department, only exist in later years. Partial-pooling would also allow for prediction on such new categories.**
 
 ##### Model
 
@@ -138,18 +138,7 @@ aucs <- sapply(rocs, auc)
 data.frame(AUC = aucs, row.names = names(models)) %>% kable(digits=4)
 ```
 
-```{r roc, fig.height=4}
-ggroc(rocs %>% rev()) + 
-  ggtitle('ROC curves of selected models') + 
-  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") + 
-  theme_bw() + 
-  theme(legend.position = 'none') + 
-  annotate(geom='text', x = 0.25, y = 0.25, label = paste('max AUC =', round(max(aucs), 4)))
-```
-
-
 Based on the model selection process, the final model (shown in the last row of the table) is:
-
 
 $$\textrm{logit}\left[\Pr(\textrm{full}_i=1)\right] = \beta_0 + \vec\beta\cdot\vec x_i + \alpha^{dept}_{j[i]} + \beta^{term}_{j[i]}\textrm{term}_i + \alpha^{building}_{k[i]}$$
 $$\alpha^{dept}_j \sim \mathcal{N}(\mu^{dept},\ \sigma_{dept}^2)$$
@@ -187,7 +176,7 @@ kable(coefs, digits=4)
 
 The baseline values are a 100-level, single credit course held on west campus.
 
-The results are generally unsurprising. The strongest predictors are level (a proxy for difficulty), capacity, and number of crosslistings. Expected probability of fullness decreases as course level goes up. All else held constant, each additional crosslisting is expected to multiply the odds ratio by a factor of `r round(coefs[coefs$Variable == 'Crosslistings',]$Estimate[1], 4)`. Having a lab or a discussion decreases expected probability of fullness whereas seminars are expected to be full more often than non-seminars. Courses which meet fewer times per week and for less total time are expected to fill at higher rates, although it is interesting that the meeting days themselves does not add any additional information (as seen in the model selection). A course being held on West campus is expected to fill with higher probability than a comparable course held elsewhere.
+The strongest predictors are level (a proxy for difficulty), capacity, and number of crosslistings. Expected probability of fullness decreases as course level goes up. All else held constant, each additional crosslisting is expected to multiply the odds ratio by a factor of `r round(coefs[coefs$Variable == 'Crosslistings',]$Estimate[1], 4)`. Having a lab or a discussion decreases expected probability of fullness whereas seminars are expected to be full more often than non-seminars. Courses which meet fewer times per week and for less total time are expected to fill at higher rates, although it is interesting that the meeting days themselves does not add any additional information (as seen in the model selection). A course being held on West campus is expected to fill with higher probability than a comparable course held elsewhere. **All else held equal, the Old Chemistry Building is expected to have the highest probability of fullness and Gross Hall is expected to have the lowest. The Physical Education course is expected to fill with highest probability while a German course is expected to fill with lowest probability.**
 
 ```{r}
 topbottom <- function(df, n = 3, digits = 4) {
@@ -202,47 +191,6 @@ topbottom <- function(df, n = 3, digits = 4) {
 }
 ```
 
-```{r}
-coefs.depts <- coef(model)$dept %>% exp()
-intercept <- coefs[which(coefs$Variable == '(Intercept)'), 'Estimate']
-
-df <- coefs.depts * intercept  # scale
-df$n <- table(data$dept)[rownames(df)]
-df <- df[df$n >= 50,]
-
-df[order(df$`(Intercept)`, decreasing = T),] %>% 
-  select(Intercept = `(Intercept)`, n) %>% 
-  topbottom() %>%
-  kable()
-```
-
-```{r}
-df <- coefs.depts * coefs[which(coefs$Variable == 'Term'), 'Estimate']  # scale
-df$n <- table(data$dept)[rownames(df)]
-df <- df[df$n >= 50,]
-
-df[order(df$term, decreasing = T),] %>% 
-  select(`Term Coefficient` = term, n) %>% 
-  topbottom() %>%
-  kable()
-```
-
-```{r}
-coefs.building <- coef(model)$building %>% exp()
-
-df <- coefs.building * intercept  # scale
-df$n <- table(data$building)[rownames(df)]
-
-buildings <- read.csv('buildings.csv', header = T)
-rownames(df) <- sapply(rownames(df), function(id) buildings[buildings$id == id,]$name)
-df <- df[df$n >= 50,]
-
-df[order(df$`(Intercept)`, decreasing = T),] %>%
-  select(Intercept = `(Intercept)`, n) %>% 
-  topbottom() %>%
-  kable()
-```
-
 ##### Visualization
 
-In order to make this analysis more accessible to the general public, a published visualization can be found at [ethanjholland.shinyapps.io/dukecoursepopularity/](https://ethanjholland.shinyapps.io/dukecoursepopularity/). The visualization uses the above model to compare the expected probability of fullness for two classes, side-by-side. As values are changed, boxes on the right appear which are green when the current settings of a variable favor the modified course (right course) and red if the variable favors the original course (left course). This tool can help departments and professors make educated descisions to maximize popularity when determining the details of a course.
+In order to make this analysis more accessible to the general public, a published visualization can be found at [ethanjholland.shinyapps.io/dukecoursepopularity/](https://ethanjholland.shinyapps.io/dukecoursepopularity/). The visualization uses the above model to compare the expected probability of fullness for two classes, side-by-side. **Course information can be entered by hand or loaded from past classes.** As values are changed, boxes on the right appear which are green when the current settings of a variable favor the modified course (right course) and red if the variable favors the original course (left course). This tool can help departments and professors make educated descisions to maximize popularity when determining the details of a course.
