@@ -128,13 +128,25 @@ models <- c(
   'Without meetings & Pratt, with dept. specific semester coefficient & quadratic start time'=model.final
 )
 
-res <- sapply(models, function(model){
+rocs <- lapply(models, function(model){
   preds <- predict(model, data.test, type = 'response', allow.new.levels=T)
-  roc(data.test$response, preds, quiet = T) %>% auc() %>% return()
+  roc(data.test$response, preds, quiet = T) %>% return()
 })
 
-data.frame(AUC = res, row.names = names(models)) %>% kable(digits=4)
+aucs <- sapply(rocs, auc)
+
+data.frame(AUC = aucs, row.names = names(models)) %>% kable(digits=4)
 ```
+
+```{r roc, fig.height=4}
+ggroc(rocs %>% rev()) + 
+  ggtitle('ROC curves of selected models') + 
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") + 
+  theme_bw() + 
+  theme(legend.position = 'none') + 
+  annotate(geom='text', x = 0.25, y = 0.25, label = paste('max AUC =', round(max(aucs), 4)))
+```
+
 
 Based on the model selection process, the final model (shown in the last row of the table) is:
 
@@ -166,7 +178,7 @@ vars <- c(
   'Total lecture time (normalized)', 'Campus: central', 'Campus: east', 'Campus: other'
 )
 
-coefs <- summary(model.final)$coefficients %>% 
+coefs <- summary(model)$coefficients %>% 
   as.data.frame() %>% 
   mutate(Variable = vars, Estimate = exp(Estimate), `Std. Error`=exp(`Std. Error`), `p-value`=`Pr(>|z|)`) %>% 
   select(Variable, Estimate, `Std. Error`, `z value`, `p-value`)
@@ -176,6 +188,60 @@ kable(coefs, digits=4)
 The baseline values are a 100-level, single credit course held on west campus.
 
 The results are generally unsurprising. The strongest predictors are level (a proxy for difficulty), capacity, and number of crosslistings. Expected probability of fullness decreases as course level goes up. All else held constant, each additional crosslisting is expected to multiply the odds ratio by a factor of `r round(coefs[coefs$Variable == 'Crosslistings',]$Estimate[1], 4)`. Having a lab or a discussion decreases expected probability of fullness whereas seminars are expected to be full more often than non-seminars. Courses which meet fewer times per week and for less total time are expected to fill at higher rates, although it is interesting that the meeting days themselves does not add any additional information (as seen in the model selection). A course being held on West campus is expected to fill with higher probability than a comparable course held elsewhere.
+
+```{r}
+topbottom <- function(df, n = 3, digits = 4) {
+  ellipsis <- data.frame(temp = '...', n = '...', row.names = '...')
+  names(ellipsis) <- names(df)
+
+  rbind(
+    head(round(df, digits), n),
+    ellipsis,
+    tail(round(df, digits), n)
+  ) %>% return()
+}
+```
+
+```{r}
+coefs.depts <- coef(model)$dept %>% exp()
+intercept <- coefs[which(coefs$Variable == '(Intercept)'), 'Estimate']
+
+df <- coefs.depts * intercept  # scale
+df$n <- table(data$dept)[rownames(df)]
+df <- df[df$n >= 50,]
+
+df[order(df$`(Intercept)`, decreasing = T),] %>% 
+  select(Intercept = `(Intercept)`, n) %>% 
+  topbottom() %>%
+  kable()
+```
+
+```{r}
+df <- coefs.depts * coefs[which(coefs$Variable == 'Term'), 'Estimate']  # scale
+df$n <- table(data$dept)[rownames(df)]
+df <- df[df$n >= 50,]
+
+df[order(df$term, decreasing = T),] %>% 
+  select(`Term Coefficient` = term, n) %>% 
+  topbottom() %>%
+  kable()
+```
+
+```{r}
+coefs.building <- coef(model)$building %>% exp()
+
+df <- coefs.building * intercept  # scale
+df$n <- table(data$building)[rownames(df)]
+
+buildings <- read.csv('buildings.csv', header = T)
+rownames(df) <- sapply(rownames(df), function(id) buildings[buildings$id == id,]$name)
+df <- df[df$n >= 50,]
+
+df[order(df$`(Intercept)`, decreasing = T),] %>%
+  select(Intercept = `(Intercept)`, n) %>% 
+  topbottom() %>%
+  kable()
+```
 
 ##### Visualization
 
